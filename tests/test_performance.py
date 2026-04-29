@@ -28,8 +28,10 @@ def test_rcolu_pallas_not_much_slower_than_reference(dim):
     from jax_colu.gpu._rcolu import rcolu_gpu
 
     x = randn(np.random.default_rng(0), (2048, dim), jnp.float32)
-    t_ref = _time_ms(lambda z: rcolu_reference(z, dim=dim), x)
-    t_gpu = _time_ms(lambda z: rcolu_gpu(z, dim=dim), x)
+    ref = jax.jit(lambda z: rcolu_reference(z, dim=dim))
+    gpu = jax.jit(lambda z: rcolu_gpu(z, dim=dim))
+    t_ref = _time_ms(ref, x)
+    t_gpu = _time_ms(gpu, x)
     assert t_gpu <= t_ref * 1.25
 
 

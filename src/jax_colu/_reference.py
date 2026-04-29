@@ -114,6 +114,10 @@ def _rcolu_hard_inner(x: jax.Array, eps: float) -> jax.Array:
 
 
 def _rcolu_hard_fwd(x: jax.Array, eps: float):
+    out_dtype = x.dtype
+    if x.dtype in (jnp.float16, jnp.bfloat16):
+        x = x.astype(jnp.float32)
+
     S = x.shape[-1]
     inv_s = 1.0 / math.sqrt(float(S))
 
@@ -124,11 +128,13 @@ def _rcolu_hard_fwd(x: jax.Array, eps: float):
     w = x - t * inv_s
     t_out = jnp.maximum(t, 0.0)
     sc = jnp.minimum(t_out / (r + eps), 1.0)
-    return t_out * inv_s + sc * w, (x, t, r, sc)
+    return (t_out * inv_s + sc * w).astype(out_dtype), (x, t, r, sc)
 
 
 def _rcolu_hard_bwd(eps: float, residuals, go: jax.Array):
     x, t, r, sc = residuals
+    go_dtype = go.dtype
+    go = go.astype(x.dtype)
     S = x.shape[-1]
     inv_s = 1.0 / math.sqrt(float(S))
     w = x - t * inv_s
@@ -146,7 +152,7 @@ def _rcolu_hard_bwd(eps: float, residuals, go: jax.Array):
     gw_active = sc * go_w - (t * dot_go_w / (den * den * r_safe)) * w
     gx_active = gt_active * inv_s + gw_active
     gx = jnp.where(saturated, go, jnp.where(active, gx_active, jnp.zeros_like(go)))
-    return (gx,)
+    return (gx.astype(go_dtype),)
 
 
 _rcolu_hard_inner.defvjp(_rcolu_hard_fwd, _rcolu_hard_bwd)

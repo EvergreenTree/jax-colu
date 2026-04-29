@@ -64,10 +64,14 @@ def test_colu_reference_non_last_channel_axis(rng):
     np.testing.assert_allclose(np.array(jnp.moveaxis(yt, -1, 1)), np.array(y), atol=1e-5)
 
 
-def test_dispatch_uses_reference_on_metal_or_cpu(rng):
+def test_public_dispatch_matches_reference(rng):
     x = randn(rng, (4, 16))
-    np.testing.assert_allclose(np.array(rcolu(x, dim=4)), np.array(rcolu_reference(x, dim=4)))
-    np.testing.assert_allclose(np.array(colu(x, dim=4)), np.array(colu_reference(x, dim=4)))
+    np.testing.assert_allclose(
+        np.array(rcolu(x, dim=4)), np.array(rcolu_reference(x, dim=4)), atol=1e-6
+    )
+    np.testing.assert_allclose(
+        np.array(colu(x, dim=4)), np.array(colu_reference(x, dim=4)), atol=1e-6
+    )
 
 
 def test_jit_vmap_and_scan(rng):

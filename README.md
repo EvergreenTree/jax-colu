@@ -85,6 +85,37 @@ CPU medians from local runs:
 
 Times are milliseconds. On this machine, `two_pass` and public `custom_vjp` are the fastest rCoLU paths for the larger shapes. The custom VJP is mainly expected to help backward/training workloads.
 
+GPU validation on 2026-04-29:
+
+- Hardware: NVIDIA RTX PRO 6000 Blackwell Server Edition, driver 580.82.07, CUDA 13.0.
+- Software: Python 3.12.13, JAX 0.7.2, jaxlib 0.7.2.
+- Test command: `python -m pytest -m gpu`.
+- Result: `54 passed, 49 deselected, 16 xfailed`.
+- Full publish validation: `python -m pytest` reported `97 passed, 6 skipped, 16 xfailed`.
+- Package build: `python -m build --no-isolation` successfully built `jax_colu-0.2.0.tar.gz` and `jax_colu-0.2.0-py3-none-any.whl`; `twine check dist/*` passed for both files.
+- Passing coverage: f32 and bf16 public `rcolu()` GPU dispatch, public `colu()` fallback dispatch, direct rCoLU Pallas correctness, rCoLU GPU VJP checks, and the rCoLU Pallas performance smoke test.
+- Expected xfails: direct experimental CoLU Pallas tests.
+
+Blackwell GPU raw activation medians from:
+
+```bash
+python benchmarks/run_benchmarks.py --devices gpu --out results/gpu_blackwell --batch 4096 --channels 256 --dims 4 8 16 32 --warmup 10 --repeat 200
+```
+
+| op | S | naive | naive_jit | static_e | two_pass | single | jax_colu/custom_vjp | raw_jax | relu | silu | gelu |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| rCoLU | 4 | 0.4529 | 0.0310 | 0.0312 | 0.0630 | 0.0211 | 0.1999 | - | - | - | - |
+| rCoLU | 8 | 0.4438 | 0.0306 | 0.0307 | 0.0388 | 0.0273 | 0.1158 | - | - | - | - |
+| rCoLU | 16 | 0.4539 | 0.0305 | 0.0308 | 0.0291 | 0.0274 | 0.0802 | - | - | - | - |
+| rCoLU | 32 | 0.4588 | 0.0283 | 0.0308 | 0.0286 | 0.0276 | 0.0613 | - | - | - | - |
+| CoLU | 4 | - | - | - | - | - | 0.0250 | 0.0247 | - | - | - |
+| CoLU | 8 | - | - | - | - | - | 0.0273 | 0.0271 | - | - | - |
+| CoLU | 16 | - | - | - | - | - | 0.0273 | 0.0273 | - | - | - |
+| CoLU | 32 | - | - | - | - | - | 0.0280 | 0.0270 | - | - | - |
+| JAX activations | - | - | - | - | - | - | - | - | 0.0255 | 0.0250 | 0.0253 |
+
+Times are milliseconds. On this Blackwell run, the public rCoLU Pallas path is slower than the best raw JAX rCoLU variants for forward-only latency. Public CoLU matches raw JAX because public dispatch intentionally uses the reference implementation.
+
 ## Cap rotation experiment
 
 ```bash
