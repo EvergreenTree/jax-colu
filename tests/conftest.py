@@ -22,17 +22,30 @@ def has_gpu_backend() -> bool:
     return bool(_platforms() & {"gpu", "cuda", "rocm"})
 
 
+def has_supported_gpu_pallas_backend() -> bool:
+    if not has_gpu_backend():
+        return False
+    from jax_colu._dispatch import _gpu_backend_supports_pallas
+
+    return _gpu_backend_supports_pallas()
+
+
+def require_supported_gpu_pallas_backend() -> None:
+    if not has_supported_gpu_pallas_backend():
+        pytest.skip("requires Ampere-or-newer NVIDIA GPU Pallas backend")
+
+
 def has_tpu_backend() -> bool:
     return "tpu" in _platforms()
 
 
 def pytest_collection_modifyitems(config, items):
-    skip_gpu = pytest.mark.skip(reason="requires CUDA/ROCm Pallas backend")
+    skip_gpu = pytest.mark.skip(reason="requires supported GPU Pallas backend")
     skip_tpu = pytest.mark.skip(reason="requires TPU Pallas backend")
     for item in items:
-        if "gpu" in item.keywords and not has_gpu_backend():
+        if item.get_closest_marker("gpu") is not None and not has_gpu_backend():
             item.add_marker(skip_gpu)
-        if "tpu" in item.keywords and not has_tpu_backend():
+        if item.get_closest_marker("tpu") is not None and not has_tpu_backend():
             item.add_marker(skip_tpu)
 
 

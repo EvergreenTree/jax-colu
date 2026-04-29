@@ -43,7 +43,7 @@ packages = ["src/jax_colu"]
 testpaths = ["tests"]
 addopts = "-v --tb=short"
 markers = [
-    "gpu: requires a CUDA/ROCm GPU Pallas backend",
+    "gpu: requires a supported GPU Pallas backend",
     "tpu: requires a TPU Pallas backend",
     "slow: long-running benchmark or performance smoke test",
 ]

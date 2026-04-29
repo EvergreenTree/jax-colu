@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import functools
+import os
 from collections.abc import Sequence
 
 import jax
@@ -13,13 +14,125 @@ _GPU_BACKENDS = frozenset({"gpu", "cuda", "rocm"})
 _TPU_BACKENDS = frozenset({"tpu"})
 _METAL_BACKENDS = frozenset({"metal", "mps"})
 
+_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+# Pallas/Triton GPU lowering is not universally safe across NVIDIA generations.
+# The public dispatch path is conservative: pre-Ampere NVIDIA GPUs use the JAX
+# reference path unless the user explicitly opts in with JAX_COLU_FORCE_PALLAS=1.
+_PRE_AMPERE_NVIDIA_TOKENS = (
+    "tesla t",
+    " t4",
+    "tesla v",
+    " v100",
+    "tesla p",
+    " p100",
+    " p40",
+    " p4",
+    "tesla k",
+    " k80",
+    "tesla m",
+    " m60",
+    "quadro rtx",
+    "rtx 20",
+    "rtx 2060",
+    "rtx 2070",
+    "rtx 2080",
+    "gtx ",
+    "titan",
+)
+_AMPERE_OR_NEWER_NVIDIA_TOKENS = (
+    "a100",
+    "a800",
+    "a10",
+    "a16",
+    "a2",
+    "a30",
+    "a40",
+    "l4",
+    "l40",
+    "rtx 30",
+    "rtx 40",
+    "rtx 50",
+    "rtx a",
+    "ada",
+    "h100",
+    "h200",
+    "hopper",
+    "b100",
+    "b200",
+    "gb200",
+    "blackwell",
+)
+
 
 def _backend() -> str:
     return jax.default_backend().lower()
 
 
+def _env_truthy(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in _TRUTHY
+
+
 def _is_scalar_dim(dim: object) -> bool:
     return not isinstance(dim, Sequence) or isinstance(dim, (str, bytes))
+
+
+def _normalise_device_kind(device_kind: str) -> str:
+    return f" {device_kind.lower().replace('-', ' ')} "
+
+
+def _looks_like_nvidia(device_kind: str) -> bool:
+    kind = _normalise_device_kind(device_kind)
+    return any(
+        token in kind
+        for token in (
+            "nvidia",
+            "tesla",
+            "geforce",
+            "quadro",
+            "rtx",
+            "gtx",
+            "titan",
+        )
+    )
+
+
+def _is_pre_ampere_nvidia(device_kind: str) -> bool:
+    kind = _normalise_device_kind(device_kind)
+    return any(token in kind for token in _PRE_AMPERE_NVIDIA_TOKENS)
+
+
+def _is_ampere_or_newer_nvidia(device_kind: str) -> bool:
+    kind = _normalise_device_kind(device_kind)
+    return any(token in kind for token in _AMPERE_OR_NEWER_NVIDIA_TOKENS)
+
+
+def _gpu_device_kinds() -> tuple[str, ...]:
+    try:
+        devices = jax.devices("gpu")
+    except Exception:
+        devices = [device for device in jax.devices() if device.platform in _GPU_BACKENDS]
+    return tuple(getattr(device, "device_kind", str(device)) for device in devices)
+
+
+def _gpu_backend_supports_pallas() -> bool:
+    if _env_truthy("JAX_COLU_DISABLE_PALLAS"):
+        return False
+    if _env_truthy("JAX_COLU_FORCE_PALLAS"):
+        return True
+
+    kinds = _gpu_device_kinds()
+    if not kinds:
+        return False
+
+    for kind in kinds:
+        if not _looks_like_nvidia(kind):
+            return False
+        if _is_pre_ampere_nvidia(kind):
+            return False
+        if not _is_ampere_or_newer_nvidia(kind):
+            return False
+    return True
 
 
 def _can_use_pallas_rcolu(
@@ -36,6 +149,7 @@ def _can_use_pallas_rcolu(
         and axis == -1
         and num_groups is None
         and _is_scalar_dim(dim)
+        and (backend not in _GPU_BACKENDS or _gpu_backend_supports_pallas())
     )
 
 
@@ -47,13 +161,12 @@ def _can_use_pallas_colu(
     scaling: str,
     channel_axis: int,
 ) -> bool:
-    return (
-        backend in (_GPU_BACKENDS | _TPU_BACKENDS)
-        and scaling == "hard"
-        and channel_axis == -1
-        and num_groups is None
-        and _is_scalar_dim(dim)
-    )
+    del backend, dim, num_groups, scaling, channel_axis
+    # The experimental Pallas CoLU kernel currently hits GPU lowering limits
+    # for slice/concat-like patterns and non-power-of-two blocks. Public
+    # dispatch stays on the reference implementation until that kernel is
+    # rewritten with padded power-of-two blocks and masks.
+    return False
 
 
 @functools.partial(

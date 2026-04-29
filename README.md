@@ -28,7 +28,21 @@ CoLU projects each contiguous group of `dim` channels onto a Lorentz cone.
 - `scaling` supports `"hard"`, `"soft"`, `"sqrt"`, and `"log"`.
 - `share_axis=True` for `colu` shares one apex channel across all cone groups.
 
-CUDA/TPU dispatch uses Pallas for supported hard-scaling cases. CPU and Apple Metal/MPS use the JAX reference path; current local Metal support can be installed but still fail basic `device_put`, so benchmarks record those failures explicitly.
+## Backend behavior
+
+Public functions are conservative by default:
+
+- CPU and Apple Metal/MPS use the JAX reference path.
+- `rcolu` uses Pallas on GPU only for supported hard-scaling calls on known Ampere-or-newer NVIDIA devices.
+- Pre-Ampere NVIDIA GPUs such as T4/V100, unknown GPUs, and unsupported argument combinations fall back to the JAX reference path.
+- `colu` currently uses the JAX reference path publicly. The direct `jax_colu.gpu._colu.colu_gpu` kernel remains experimental until it is rewritten around power-of-two padded blocks and masks.
+- TPU Pallas paths are hardware-gated by tests and should be validated on a real TPU before release.
+
+For local experiments, set `JAX_COLU_FORCE_PALLAS=1` to bypass the GPU guard or `JAX_COLU_DISABLE_PALLAS=1` to force reference dispatch.
+
+Current local Metal support can be installed but still fail basic `device_put`, so benchmarks record those failures explicitly.
+
+Blackwell tuning comes after clean kernel lowering. The expected optimization surface is processing multiple cone groups per program, power-of-two padded group widths with masks, dim/dtype specialization, fp32 accumulation for low-precision inputs, and per-architecture benchmarking of block size, num warps, and program shape.
 
 ## Install
 
@@ -100,7 +114,7 @@ pytest -m gpu
 pytest -m tpu
 ```
 
-GPU and TPU tests are marked and skipped automatically when the hardware backend is unavailable.
+GPU and TPU tests are marked and skipped automatically when the hardware backend is unavailable. The GPU suite should be run on at least one supported Ampere-or-newer NVIDIA device before publishing. Direct CoLU Pallas tests are tracked as non-blocking xfails until the padded/masked kernel rewrite is done; public `colu()` fallback tests remain blocking.
 
 Before publishing to PyPI, run the GPU and TPU suites on real hardware and only
 then push a `v*.*.*` tag. The `publish.yml` workflow is tag-only, so normal
