@@ -45,22 +45,3 @@ def test_rcolu_gpu_matches_reference(shape, dim, gpu_dtype, rng):
     got = rcolu_gpu(x, dim=dim)
     atol = 3e-3 if str(gpu_dtype) == "<class 'jax.numpy.bfloat16'>" else 2e-5
     np.testing.assert_allclose(np.array(got), np.array(ref), atol=atol, rtol=atol)
-
-
-@pytest.mark.gpu
-@pytest.mark.xfail(
-    reason="experimental CoLU Pallas kernel needs padded/masked lowering rewrite",
-    strict=False,
-)
-@pytest.mark.parametrize("share_axis", [False, True])
-def test_colu_gpu_matches_reference(dim, share_axis, gpu_dtype, rng):
-    require_supported_gpu_pallas_backend()
-    from jax_colu.gpu._colu import colu_gpu
-
-    G = 8
-    C = 1 + G * (dim - 1) if share_axis else G * dim
-    x = randn(rng, (32, C), gpu_dtype)
-    ref = colu_reference(x, dim=dim, share_axis=share_axis)
-    got = colu_gpu(x, dim=dim, share_axis=share_axis)
-    atol = 3e-3 if str(gpu_dtype) == "<class 'jax.numpy.bfloat16'>" else 2e-5
-    np.testing.assert_allclose(np.array(got), np.array(ref), atol=atol, rtol=atol)

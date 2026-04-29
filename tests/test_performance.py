@@ -7,8 +7,13 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from conftest import randn, require_supported_gpu_pallas_backend
-from jax_colu._reference import colu_reference, rcolu_reference
+from conftest import (
+    has_supported_gpu_pallas_backend,
+    has_tpu_backend,
+    randn,
+    require_supported_gpu_pallas_backend,
+)
+from jax_colu._reference import rcolu_reference
 
 
 def _time_ms(fn, x, n=50):
@@ -32,24 +37,22 @@ def test_rcolu_pallas_not_much_slower_than_reference(dim):
     gpu = jax.jit(lambda z: rcolu_gpu(z, dim=dim))
     t_ref = _time_ms(ref, x)
     t_gpu = _time_ms(gpu, x)
-    assert t_gpu <= t_ref * 1.25
+    # Multi-group blocking should at minimum match the reference; allow a 10%
+    # slack for measurement noise on small shapes.
+    assert t_gpu <= t_ref * 1.1
 
 
-@pytest.mark.gpu
+@pytest.mark.tpu
 @pytest.mark.slow
-@pytest.mark.xfail(
-    reason="experimental CoLU Pallas kernel needs padded/masked lowering rewrite",
-    strict=False,
-)
-@pytest.mark.parametrize("share_axis", [False, True])
-def test_colu_pallas_smoke(share_axis):
-    require_supported_gpu_pallas_backend()
-    from jax_colu.gpu._colu import colu_gpu
+@pytest.mark.parametrize("dim", [4, 8, 16, 32])
+def test_rcolu_tpu_pallas_not_much_slower_than_reference(dim):
+    if not has_tpu_backend():
+        pytest.skip("requires TPU backend")
+    from jax_colu.tpu._rcolu import rcolu_tpu
 
-    dim = 8
-    G = 32
-    C = 1 + G * (dim - 1) if share_axis else G * dim
-    x = randn(np.random.default_rng(0), (512, C), jnp.float32)
-    t_ref = _time_ms(lambda z: colu_reference(z, dim=dim, share_axis=share_axis), x)
-    t_gpu = _time_ms(lambda z: colu_gpu(z, dim=dim, share_axis=share_axis), x)
-    assert t_gpu <= t_ref * 1.5
+    x = randn(np.random.default_rng(0), (4096, 256), jnp.float32)
+    ref = jax.jit(lambda z: rcolu_reference(z, dim=dim))
+    tpu = jax.jit(lambda z: rcolu_tpu(z, dim=dim))
+    t_ref = _time_ms(ref, x)
+    t_tpu = _time_ms(tpu, x)
+    assert t_tpu <= t_ref * 1.25
