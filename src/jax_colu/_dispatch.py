@@ -12,56 +12,19 @@ from jax_colu._reference import colu_reference, rcolu_reference
 
 _GPU_BACKENDS = frozenset({"gpu", "cuda", "rocm"})
 _TPU_BACKENDS = frozenset({"tpu"})
-_METAL_BACKENDS = frozenset({"metal", "mps"})
 
 _TRUTHY = frozenset({"1", "true", "yes", "on"})
 
-# Pallas/Triton GPU lowering is not universally safe across NVIDIA generations.
-# The public dispatch path is conservative: pre-Ampere NVIDIA GPUs use the JAX
-# reference path unless the user explicitly opts in with JAX_COLU_FORCE_PALLAS=1.
-_PRE_AMPERE_NVIDIA_TOKENS = (
-    "tesla t",
-    " t4",
-    "tesla v",
-    " v100",
-    "tesla p",
-    " p100",
-    " p40",
-    " p4",
-    "tesla k",
-    " k80",
-    "tesla m",
-    " m60",
-    "quadro rtx",
-    "rtx 20",
-    "rtx 2060",
-    "rtx 2070",
-    "rtx 2080",
-    "gtx ",
-    "titan",
-)
-_AMPERE_OR_NEWER_NVIDIA_TOKENS = (
-    "a100",
-    "a800",
-    "a10",
-    "a16",
-    "a2",
-    "a30",
-    "a40",
-    "l4",
-    "l40",
-    "rtx 30",
-    "rtx 40",
-    "rtx 50",
-    "rtx a",
-    "ada",
-    "h100",
-    "h200",
-    "hopper",
-    "b100",
-    "b200",
-    "gb200",
-    "blackwell",
+# Public dispatch only routes to the GPU Pallas kernel on Ampere-or-newer
+# NVIDIA devices; older NVIDIA generations and non-NVIDIA GPUs fall back to
+# the JAX reference path. Users can override either way with
+# JAX_COLU_FORCE_PALLAS / JAX_COLU_DISABLE_PALLAS.
+_AMPERE_PLUS_TOKENS = (
+    "a100", "a800", "a10", "a16", "a2", "a30", "a40",
+    "l4", "l40",
+    "rtx 30", "rtx 40", "rtx 50", "rtx a", "ada",
+    "h100", "h200", "hopper",
+    "b100", "b200", "gb200", "blackwell",
 )
 
 
@@ -81,38 +44,17 @@ def _normalise_device_kind(device_kind: str) -> str:
     return f" {device_kind.lower().replace('-', ' ')} "
 
 
-def _looks_like_nvidia(device_kind: str) -> bool:
-    kind = _normalise_device_kind(device_kind)
-    return any(
-        token in kind
-        for token in (
-            "nvidia",
-            "tesla",
-            "geforce",
-            "quadro",
-            "rtx",
-            "gtx",
-            "titan",
-        )
-    )
-
-
-def _is_pre_ampere_nvidia(device_kind: str) -> bool:
-    kind = _normalise_device_kind(device_kind)
-    return any(token in kind for token in _PRE_AMPERE_NVIDIA_TOKENS)
-
-
-def _is_ampere_or_newer_nvidia(device_kind: str) -> bool:
-    kind = _normalise_device_kind(device_kind)
-    return any(token in kind for token in _AMPERE_OR_NEWER_NVIDIA_TOKENS)
+def _is_ampere_plus(device_kind: str) -> bool:
+    haystack = _normalise_device_kind(device_kind)
+    return any(token in haystack for token in _AMPERE_PLUS_TOKENS)
 
 
 def _gpu_device_kinds() -> tuple[str, ...]:
     try:
         devices = jax.devices("gpu")
     except Exception:
-        devices = [device for device in jax.devices() if device.platform in _GPU_BACKENDS]
-    return tuple(getattr(device, "device_kind", str(device)) for device in devices)
+        devices = [d for d in jax.devices() if d.platform in _GPU_BACKENDS]
+    return tuple(getattr(d, "device_kind", str(d)) for d in devices)
 
 
 def _gpu_backend_supports_pallas() -> bool:
@@ -120,19 +62,23 @@ def _gpu_backend_supports_pallas() -> bool:
         return False
     if _env_truthy("JAX_COLU_FORCE_PALLAS"):
         return True
-
     kinds = _gpu_device_kinds()
-    if not kinds:
+    return bool(kinds) and all(_is_ampere_plus(k) for k in kinds)
+
+
+def _has_tpu_devices() -> bool:
+    try:
+        return bool(jax.devices("tpu"))
+    except Exception:
         return False
 
-    for kind in kinds:
-        if not _looks_like_nvidia(kind):
-            return False
-        if _is_pre_ampere_nvidia(kind):
-            return False
-        if not _is_ampere_or_newer_nvidia(kind):
-            return False
-    return True
+
+def _tpu_backend_supports_pallas() -> bool:
+    if _env_truthy("JAX_COLU_DISABLE_PALLAS"):
+        return False
+    if _env_truthy("JAX_COLU_FORCE_PALLAS"):
+        return True
+    return _has_tpu_devices()
 
 
 def _can_use_pallas_rcolu(
@@ -143,29 +89,17 @@ def _can_use_pallas_rcolu(
     scaling: str,
     axis: int,
 ) -> bool:
-    return (
-        backend in _GPU_BACKENDS
-        and scaling == "hard"
+    if not (
+        scaling == "hard"
         and axis == -1
         and num_groups is None
         and _is_scalar_dim(dim)
-        and _gpu_backend_supports_pallas()
-    )
-
-
-def _can_use_pallas_colu(
-    *,
-    backend: str,
-    dim: object,
-    num_groups: object,
-    scaling: str,
-    channel_axis: int,
-) -> bool:
-    del backend, dim, num_groups, scaling, channel_axis
-    # The experimental Pallas CoLU kernel currently hits GPU lowering limits
-    # for slice/concat-like patterns and non-power-of-two blocks. Public
-    # dispatch stays on the reference implementation until that kernel is
-    # rewritten with padded power-of-two blocks and masks.
+    ):
+        return False
+    if backend in _GPU_BACKENDS:
+        return _gpu_backend_supports_pallas()
+    if backend in _TPU_BACKENDS:
+        return _tpu_backend_supports_pallas()
     return False
 
 
@@ -224,24 +158,12 @@ def colu(
     dim=4,
     share_axis=False,
 ):
-    """Explicit-axis Conic Linear Unit."""
-    backend = _backend()
-    if _can_use_pallas_colu(
-        backend=backend,
-        dim=dim,
-        num_groups=num_groups,
-        scaling=scaling,
-        channel_axis=channel_axis,
-    ):
-        if backend in _GPU_BACKENDS:
-            from jax_colu.gpu._colu import colu_gpu
+    """Explicit-axis Conic Linear Unit.
 
-            return colu_gpu(x, dim=dim, eps=eps, share_axis=share_axis)
-        if backend in _TPU_BACKENDS:
-            from jax_colu.tpu._colu import colu_tpu
-
-            return colu_tpu(x, dim=dim, eps=eps, share_axis=share_axis)
-
+    Public dispatch always routes to the JAX reference implementation. The
+    Pallas CoLU kernel is being rewritten around padded power-of-two blocks
+    and is not part of the public API yet.
+    """
     return colu_reference(
         x,
         channel_axis=channel_axis,

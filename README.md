@@ -33,16 +33,17 @@ CoLU projects each contiguous group of `dim` channels onto a Lorentz cone.
 Public functions are conservative by default:
 
 - CPU and Apple Metal/MPS use the JAX reference path.
-- `rcolu` uses Pallas on GPU only for supported hard-scaling calls on known Ampere-or-newer NVIDIA devices.
+- `rcolu` uses a Pallas kernel on (a) Ampere-or-newer NVIDIA GPUs and (b) TPUs, for hard-scaling calls with `axis=-1` and a scalar `dim`.
 - Pre-Ampere NVIDIA GPUs such as T4/V100, unknown GPUs, and unsupported argument combinations fall back to the JAX reference path.
-- `colu` currently uses the JAX reference path publicly. The direct `jax_colu.gpu._colu.colu_gpu` kernel remains experimental until it is rewritten around power-of-two padded blocks and masks.
-- TPU currently uses the JAX reference path. TPU Pallas kernels should be added only after a TPU-specific padded/masked lowering rewrite and validation on real hardware.
+- `colu` always uses the JAX reference path. A padded/masked Pallas CoLU kernel will land in a later release; the previously experimental `jax_colu.gpu._colu.colu_gpu` and `jax_colu.tpu._colu.colu_tpu` modules have been removed because they were unreachable from public dispatch.
 
-For local experiments, set `JAX_COLU_FORCE_PALLAS=1` to bypass the GPU guard or `JAX_COLU_DISABLE_PALLAS=1` to force reference dispatch.
+Both Pallas backends share a single fused kernel body (`src/jax_colu/_kernel_math.py`); the GPU and TPU wrappers differ only in tile geometry. The forward kernel processes a contiguous block of cone groups per program (multi-group blocking) — `JAX_COLU_BLOCK=N` overrides the auto-picked block size. The backward kernel recomputes `t`, `r`, `sc` from the saved input rather than carrying scalar-per-row residuals; this halves residual memory and avoids `(BLOCK_M, 1)` lane-padding pitfalls on TPU.
+
+For local experiments, set `JAX_COLU_FORCE_PALLAS=1` to bypass the architecture guard or `JAX_COLU_DISABLE_PALLAS=1` to force reference dispatch (both env vars apply on GPU and TPU).
 
 Current local Metal support can be installed but still fail basic `device_put`, so benchmarks record those failures explicitly.
 
-Blackwell tuning comes after clean kernel lowering. The expected optimization surface is processing multiple cone groups per program, power-of-two padded group widths with masks, dim/dtype specialization, fp32 accumulation for low-precision inputs, and per-architecture benchmarking of block size, num warps, and program shape.
+Blackwell-specific tuning is exposed via `JAX_COLU_BLOCK`; the auto-picker targets ~1024 elements per program on GPU and the largest sublane-aligned block (multiple of 8) on TPU. Future work: power-of-two padded group widths with masks for non-pow2 `dim`, dim/dtype specialization, and per-architecture sweeps of block size and program shape.
 
 ## Install
 
@@ -85,16 +86,14 @@ CPU medians from local runs:
 
 Times are milliseconds. On this machine, `two_pass` and public `custom_vjp` are the fastest rCoLU paths for the larger shapes. The custom VJP is mainly expected to help backward/training workloads.
 
-GPU validation on 2026-04-29:
+GPU validation on 2026-04-29 (v0.2.0, prior release):
 
 - Hardware: NVIDIA RTX PRO 6000 Blackwell Server Edition, driver 580.82.07, CUDA 13.0.
 - Software: Python 3.12.13, JAX 0.7.2, jaxlib 0.7.2.
 - Test command: `python -m pytest -m gpu`.
-- Result: `54 passed, 49 deselected, 16 xfailed`.
-- Full publish validation: `python -m pytest` reported `97 passed, 6 skipped, 16 xfailed`.
-- Package build: `python -m build --no-isolation` successfully built `jax_colu-0.2.0.tar.gz` and `jax_colu-0.2.0-py3-none-any.whl`; `twine check dist/*` passed for both files.
-- Passing coverage: f32 and bf16 public `rcolu()` GPU dispatch, public `colu()` fallback dispatch, direct rCoLU Pallas correctness, rCoLU GPU VJP checks, and the rCoLU Pallas performance smoke test.
-- Expected xfails: direct experimental CoLU Pallas tests.
+- Package build: `python -m build --no-isolation` plus `twine check dist/*` clean.
+
+For v0.3.0 the GPU rCoLU kernel was rewritten around multi-group blocking and a real TPU Pallas kernel was added. Both must be re-validated on the Blackwell box and on a TPU host before tagging — the experimental CoLU Pallas xfails have been deleted along with the dormant kernels they covered.
 
 Blackwell GPU raw activation medians from:
 
@@ -114,7 +113,19 @@ python benchmarks/run_benchmarks.py --devices gpu --out results/gpu_blackwell --
 | CoLU | 32 | - | - | - | - | - | 0.0280 | 0.0270 | - | - | - |
 | JAX activations | - | - | - | - | - | - | - | - | 0.0255 | 0.0250 | 0.0253 |
 
-Times are milliseconds. On this Blackwell run, the public rCoLU Pallas path is slower than the best raw JAX rCoLU variants for forward-only latency. Public CoLU matches raw JAX because public dispatch intentionally uses the reference implementation.
+Times are milliseconds, recorded against v0.2.0's single-group-per-program kernel. The `custom_vjp` row was 2–7× slower than the best raw-JAX variant because each Pallas program processed only one cone group of `dim` elements, so launch overhead dominated. v0.3.0's multi-group blocking targets ~1024 elements per program; rerun the benchmark on Blackwell to refresh the table.
+
+TPU v0.2.0 medians (batch=4096, channels=256, repeat=50) — also from before the new TPU Pallas kernel landed:
+
+| op | implementation | dim=4 | dim=8 | dim=16 | dim=32 |
+|---|---|---:|---:|---:|---:|
+| rcolu | custom_vjp (reference fallback) | 0.1715 | 0.1483 | 0.1520 | 0.1340 |
+| rcolu | two_pass | 0.1704 | 0.1507 | 0.1302 | 0.1346 |
+| rcolu | static_e | 0.2175 | 0.1508 | 0.1274 | 0.1502 |
+| colu | jax_colu (reference) | 0.1802 | 0.1514 | 0.1353 | 0.1335 |
+| jax.nn | relu / silu / gelu | 0.1257 | 0.1288 | 0.1265 | — |
+
+Times are milliseconds. The v0.3.0 TPU rCoLU Pallas kernel uses sublane-aligned blocking (BM multiple of 8); refresh this table on a real TPU host once the kernel is benchmarked.
 
 ## Cap rotation experiment
 
@@ -145,7 +156,7 @@ pytest -m gpu
 pytest -m tpu
 ```
 
-GPU and TPU tests are marked and skipped automatically when the hardware backend is unavailable. The GPU suite should be run on at least one supported Ampere-or-newer NVIDIA device before publishing. Direct CoLU Pallas tests are tracked as non-blocking xfails until the padded/masked kernel rewrite is done; public `colu()` fallback tests remain blocking.
+GPU and TPU tests are marked and skipped automatically when the hardware backend is unavailable. The GPU suite should be run on at least one supported Ampere-or-newer NVIDIA device, and the TPU suite on a real TPU host, before publishing. Public `colu()` always falls back to the reference implementation; the experimental CoLU Pallas modules and their xfails were removed.
 
 Before publishing to PyPI, run the GPU and TPU suites on real hardware and only
 then push a `v*.*.*` tag. The `publish.yml` workflow is tag-only, so normal
