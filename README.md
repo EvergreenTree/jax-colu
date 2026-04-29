@@ -86,34 +86,114 @@ CPU medians from local runs:
 
 Times are milliseconds. On this machine, `two_pass` and public `custom_vjp` are the fastest rCoLU paths for the larger shapes. The custom VJP is mainly expected to help backward/training workloads.
 
-GPU validation on 2026-04-29 (v0.2.0, prior release):
+GPU validation on 2026-04-29:
 
 - Hardware: NVIDIA RTX PRO 6000 Blackwell Server Edition, driver 580.82.07, CUDA 13.0.
 - Software: Python 3.12.13, JAX 0.7.2, jaxlib 0.7.2.
-- Test command: `python -m pytest -m gpu`.
-- Package build: `python -m build --no-isolation` plus `twine check dist/*` clean.
+- Test command: `python -m pytest -m gpu` (`54 passed`).
 
-For v0.3.0 the GPU rCoLU kernel was rewritten around multi-group blocking and a real TPU Pallas kernel was added. Both must be re-validated on the Blackwell box and on a TPU host before tagging — the experimental CoLU Pallas xfails have been deleted along with the dormant kernels they covered.
-
-Blackwell GPU raw activation medians from:
+Blackwell GPU medians below are for `batch=4096`, `channels=256`; times are milliseconds. The public `rcolu` path uses the multi-group Pallas kernel on this backend, while public `colu` remains the JAX reference path.
 
 ```bash
 python benchmarks/run_benchmarks.py --devices gpu --out results/gpu_blackwell --batch 4096 --channels 256 --dims 4 8 16 32 --warmup 10 --repeat 200
 ```
 
-| op | S | naive | naive_jit | static_e | two_pass | single | jax_colu/custom_vjp | raw_jax | relu | silu | gelu |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| rCoLU | 4 | 0.4529 | 0.0310 | 0.0312 | 0.0630 | 0.0211 | 0.1999 | - | - | - | - |
-| rCoLU | 8 | 0.4438 | 0.0306 | 0.0307 | 0.0388 | 0.0273 | 0.1158 | - | - | - | - |
-| rCoLU | 16 | 0.4539 | 0.0305 | 0.0308 | 0.0291 | 0.0274 | 0.0802 | - | - | - | - |
-| rCoLU | 32 | 0.4588 | 0.0283 | 0.0308 | 0.0286 | 0.0276 | 0.0613 | - | - | - | - |
-| CoLU | 4 | - | - | - | - | - | 0.0250 | 0.0247 | - | - | - |
-| CoLU | 8 | - | - | - | - | - | 0.0273 | 0.0271 | - | - | - |
-| CoLU | 16 | - | - | - | - | - | 0.0273 | 0.0273 | - | - | - |
-| CoLU | 32 | - | - | - | - | - | 0.0280 | 0.0270 | - | - | - |
-| JAX activations | - | - | - | - | - | - | - | - | 0.0255 | 0.0250 | 0.0253 |
+<table>
+  <thead>
+    <tr>
+      <th rowspan="2">shape</th>
+      <th rowspan="2">S</th>
+      <th colspan="6">rCoLU</th>
+      <th colspan="2">CoLU</th>
+      <th colspan="3">jax.nn</th>
+    </tr>
+    <tr>
+      <th>naive</th>
+      <th>naive_jit</th>
+      <th>static_e</th>
+      <th>two_pass</th>
+      <th>single</th>
+      <th>jax_colu</th>
+      <th>raw_jax</th>
+      <th>jax_colu</th>
+      <th>relu</th>
+      <th>silu</th>
+      <th>gelu</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>(4096, 256)</code></td>
+      <td align="right">4</td>
+      <td align="right">0.5137</td>
+      <td align="right">0.0327</td>
+      <td align="right">0.0275</td>
+      <td align="right">0.0630</td>
+      <td align="right">0.0237</td>
+      <td align="right">0.0274</td>
+      <td align="right">0.0268</td>
+      <td align="right">0.0272</td>
+      <td align="right">0.0191</td>
+      <td align="right">0.0283</td>
+      <td align="right">0.0162</td>
+    </tr>
+    <tr>
+      <td><code>(4096, 256)</code></td>
+      <td align="right">8</td>
+      <td align="right">0.4947</td>
+      <td align="right">0.0291</td>
+      <td align="right">0.0279</td>
+      <td align="right">0.0609</td>
+      <td align="right">0.0255</td>
+      <td align="right">0.0233</td>
+      <td align="right">0.0257</td>
+      <td align="right">0.0260</td>
+      <td align="right">0.0191</td>
+      <td align="right">0.0283</td>
+      <td align="right">0.0162</td>
+    </tr>
+    <tr>
+      <td><code>(4096, 256)</code></td>
+      <td align="right">16</td>
+      <td align="right">0.3655</td>
+      <td align="right">0.0275</td>
+      <td align="right">0.0514</td>
+      <td align="right">0.0284</td>
+      <td align="right">0.0255</td>
+      <td align="right">0.0235</td>
+      <td align="right">0.0250</td>
+      <td align="right">0.0257</td>
+      <td align="right">0.0191</td>
+      <td align="right">0.0283</td>
+      <td align="right">0.0162</td>
+    </tr>
+    <tr>
+      <td><code>(4096, 256)</code></td>
+      <td align="right">32</td>
+      <td align="right">0.4038</td>
+      <td align="right">0.0282</td>
+      <td align="right">0.0282</td>
+      <td align="right">0.0257</td>
+      <td align="right">0.0257</td>
+      <td align="right">0.0277</td>
+      <td align="right">0.0297</td>
+      <td align="right">0.0298</td>
+      <td align="right">0.0191</td>
+      <td align="right">0.0283</td>
+      <td align="right">0.0162</td>
+    </tr>
+  </tbody>
+</table>
 
-Times are milliseconds, recorded against v0.2.0's single-group-per-program kernel. The `custom_vjp` row was 2–7× slower than the best raw-JAX variant because each Pallas program processed only one cone group of `dim` elements, so launch overhead dominated. v0.3.0's multi-group blocking targets ~1024 elements per program; rerun the benchmark on Blackwell to refresh the table.
+The fused GPU path is now in the same latency range as the best raw-JAX rCoLU variants for this shape.
+
+GPU optimization follow-up should focus on large channel widths with small `S`
+(`S=4` and `S=8`). The next useful steps are to sweep larger `JAX_COLU_BLOCK`
+values for those dims, benchmark wider shapes such as `(1024, 4096)` and
+`(1024, 8192)`, and consider dim-specialized unrolled Pallas kernels if block
+tuning does not beat the best raw-JAX baseline. Forward+backward benchmarks
+should be tracked separately, since saving compact per-group residuals may be
+worth comparing against the current recompute-in-backward path.
 
 TPU v0.2.0 medians (batch=4096, channels=256, repeat=50) — also from before the new TPU Pallas kernel landed:
 
