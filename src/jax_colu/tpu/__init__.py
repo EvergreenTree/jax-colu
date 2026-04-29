@@ -1,4 +1,4 @@
-"""TPU Pallas backend for jax-colu."""
+"""TPU backend entry points for jax-colu."""
 
 from __future__ import annotations
 

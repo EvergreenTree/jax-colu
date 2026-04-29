@@ -144,12 +144,12 @@ def _can_use_pallas_rcolu(
     axis: int,
 ) -> bool:
     return (
-        backend in (_GPU_BACKENDS | _TPU_BACKENDS)
+        backend in _GPU_BACKENDS
         and scaling == "hard"
         and axis == -1
         and num_groups is None
         and _is_scalar_dim(dim)
-        and (backend not in _GPU_BACKENDS or _gpu_backend_supports_pallas())
+        and _gpu_backend_supports_pallas()
     )
 
 

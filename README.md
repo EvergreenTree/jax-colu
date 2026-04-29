@@ -36,7 +36,7 @@ Public functions are conservative by default:
 - `rcolu` uses Pallas on GPU only for supported hard-scaling calls on known Ampere-or-newer NVIDIA devices.
 - Pre-Ampere NVIDIA GPUs such as T4/V100, unknown GPUs, and unsupported argument combinations fall back to the JAX reference path.
 - `colu` currently uses the JAX reference path publicly. The direct `jax_colu.gpu._colu.colu_gpu` kernel remains experimental until it is rewritten around power-of-two padded blocks and masks.
-- TPU Pallas paths are hardware-gated by tests and should be validated on a real TPU before release.
+- TPU currently uses the JAX reference path. TPU Pallas kernels should be added only after a TPU-specific padded/masked lowering rewrite and validation on real hardware.
 
 For local experiments, set `JAX_COLU_FORCE_PALLAS=1` to bypass the GPU guard or `JAX_COLU_DISABLE_PALLAS=1` to force reference dispatch.
 

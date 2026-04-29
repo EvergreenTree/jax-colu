@@ -89,6 +89,16 @@ def test_public_rcolu_dispatch_falls_back_on_pre_ampere_gpu(
     )
 
 
+def test_public_rcolu_dispatch_stays_on_reference_path_for_tpu() -> None:
+    assert not dispatch._can_use_pallas_rcolu(
+        backend="tpu",
+        dim=4,
+        num_groups=None,
+        scaling="hard",
+        axis=-1,
+    )
+
+
 @pytest.mark.parametrize("backend", ["gpu", "tpu"])
 def test_public_colu_dispatch_stays_on_reference_path(backend: str) -> None:
     assert not dispatch._can_use_pallas_colu(
