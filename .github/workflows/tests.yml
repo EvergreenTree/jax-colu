@@ -1,0 +1,42 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  cpu:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -U pip
+      - run: pip install -e ".[dev]"
+      - run: pytest -m "not gpu and not tpu and not slow" -x
+
+  # Enable on a self-hosted CUDA/ROCm runner.
+  # gpu:
+  #   runs-on: [self-hosted, gpu]
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: actions/setup-python@v5
+  #       with:
+  #         python-version: "3.12"
+  #     - run: python -m pip install -U pip
+  #     - run: pip install -e ".[dev]" "jax[cuda13]"
+  #     - run: pytest -m "gpu" -x
+
+  # Enable on a self-hosted TPU runner.
+  # tpu:
+  #   runs-on: [self-hosted, tpu]
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: actions/setup-python@v5
+  #       with:
+  #         python-version: "3.12"
+  #     - run: python -m pip install -U pip
+  #     - run: pip install -e ".[dev]" "jax[tpu]"
+  #     - run: pytest -m "tpu" -x

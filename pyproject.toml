@@ -1,0 +1,49 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "jax-colu"
+version = "0.2.0"
+description = "Conic Linear Units for JAX with reference and Pallas backends"
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "Changqing Fu", email = "changqingfu@changqingfu.com" }]
+requires-python = ">=3.11"
+keywords = ["jax", "pallas", "activation", "deep-learning"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = ["jax>=0.10.0", "jaxlib>=0.10.0"]
+
+[project.optional-dependencies]
+dev = [
+    "hatch>=1.14",
+    "pytest>=8.0",
+    "pytest-xdist",
+    "matplotlib>=3.8",
+    "pandas>=2.0",
+    "rich",
+]
+
+[project.urls]
+Homepage = "https://github.com/EvergreenTree/jax-colu"
+Paper = "https://proceedings.mlr.press/v285/fu24a.html"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/jax_colu"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short"
+markers = [
+    "gpu: requires a CUDA/ROCm GPU Pallas backend",
+    "tpu: requires a TPU Pallas backend",
+    "slow: long-running benchmark or performance smoke test",
+]
