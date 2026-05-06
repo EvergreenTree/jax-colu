@@ -20,7 +20,7 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
-dependencies = ["jax>=0.10.0", "jaxlib>=0.10.0"]
+dependencies = ["absl-py>=1.4", "jax>=0.10.0", "jaxlib>=0.10.0"]
 
 [project.optional-dependencies]
 dev = [

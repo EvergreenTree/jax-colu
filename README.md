@@ -5,17 +5,22 @@ Fused JAX/Pallas kernels for **Conic Linear Units** (CoLU & rCoLU).
 - **Paper:** [Conic Activation Functions, PMLR 285](https://proceedings.mlr.press/v285/fu24a.html)
 - **Repo:** https://github.com/EvergreenTree/jax-colu
 
-## Quick start
+## Cap rotation experiment
 
-```python
-import jax
-import jax.numpy as jnp
-from jax_colu import rcolu, colu
-
-x = jax.random.normal(jax.random.PRNGKey(0), (8, 32))
-y = rcolu(x, dim=4)         # homogeneous-axis variant
-z = colu(x, dim=4)          # heterogeneous explicit-apex variant
+```bash
+python benchmarks/train_cap_rotation.py --out results/cap_rotation
+python benchmarks/train_cap_rotation.py --activations relu colu rcolu
 ```
+
+This trains a one-hidden-layer network to map a 3D spherical cap to a fixed rotated copy of the cap.
+
+Local CPU result after 400 steps:
+
+| activation | eval MSE |
+|---|---:|
+| ReLU | `1.48e-3` |
+| CoLU | `7.26e-4` |
+| rCoLU | `8.59e-4` |
 
 ## What's a Conic Linear Unit?
 
@@ -33,17 +38,26 @@ CoLU projects each contiguous group of `dim` channels onto a Lorentz cone.
 Public functions are conservative by default:
 
 - CPU and Apple Metal/MPS use the JAX reference path.
-- `rcolu` uses a Pallas kernel on (a) Ampere-or-newer NVIDIA GPUs and (b) TPUs, for hard-scaling calls with `axis=-1` and a scalar `dim`.
-- Pre-Ampere NVIDIA GPUs such as T4/V100, unknown GPUs, and unsupported argument combinations fall back to the JAX reference path.
-- `colu` always uses the JAX reference path. A padded/masked Pallas CoLU kernel will land in a later release; the previously experimental `jax_colu.gpu._colu.colu_gpu` and `jax_colu.tpu._colu.colu_tpu` modules have been removed because they were unreachable from public dispatch.
+- `rcolu` uses a Pallas kernel on supported hard-scaling calls with `axis=-1`, scalar `dim`, and no `num_groups`.
+- GPU defaults to the Pallas:Triton path on known Ampere-or-newer NVIDIA devices.
+- Set `JAX_COLU_GPU_BACKEND=mgpu` to opt in to the Pallas:Mosaic GPU rCoLU path on known Hopper/Blackwell NVIDIA devices.
+- TPU uses its TPU Pallas path when TPU devices are available.
+- `colu` always uses the JAX reference path publicly.
 
-Both Pallas backends share a single fused kernel body (`src/jax_colu/_kernel_math.py`); the GPU and TPU wrappers differ only in tile geometry. The forward kernel processes a contiguous block of cone groups per program (multi-group blocking) — `JAX_COLU_BLOCK=N` overrides the auto-picked block size. The backward kernel recomputes `t`, `r`, `sc` from the saved input rather than carrying scalar-per-row residuals; this halves residual memory and avoids `(BLOCK_M, 1)` lane-padding pitfalls on TPU.
+Both Pallas backends share the fused rCoLU math in `src/jax_colu/_kernel_math.py`. The default GPU path processes multiple cone groups per program; `JAX_COLU_BLOCK=N` overrides the auto-picked block size. Set `JAX_COLU_FORCE_PALLAS=1` to bypass the default Triton/TPU guard, or `JAX_COLU_DISABLE_PALLAS=1` to force reference dispatch. `JAX_COLU_FORCE_PALLAS=1` does not bypass the Hopper/Blackwell guard for `JAX_COLU_GPU_BACKEND=mgpu`.
 
-For local experiments, set `JAX_COLU_FORCE_PALLAS=1` to bypass the architecture guard or `JAX_COLU_DISABLE_PALLAS=1` to force reference dispatch (both env vars apply on GPU and TPU).
+The Mosaic GPU backend is a correctness and architecture foothold for Hopper/Blackwell-specific work such as async TMA copies, explicit shared-memory layout control, and warp scheduling. Standalone rCoLU is bandwidth-bound, so large speedups are not expected until fused `rCoLU + {LayerNorm, residual}` kernels are added.
 
-Current local Metal support can be installed but still fail basic `device_put`, so benchmarks record those failures explicitly.
+## Quick start
 
-Blackwell-specific tuning is exposed via `JAX_COLU_BLOCK`; the auto-picker targets ~1024 elements per program on GPU and the largest sublane-aligned block (multiple of 8) on TPU. Future work: power-of-two padded group widths with masks for non-pow2 `dim`, dim/dtype specialization, and per-architecture sweeps of block size and program shape.
+```python
+import jax
+from jax_colu import rcolu, colu
+
+x = jax.random.normal(jax.random.PRNGKey(0), (8, 32))
+y = rcolu(x, dim=4)         # homogeneous-axis variant
+z = colu(x, dim=4)          # heterogeneous explicit-apex variant
+```
 
 ## Install
 
@@ -51,14 +65,7 @@ Blackwell-specific tuning is exposed via `JAX_COLU_BLOCK`; the auto-picker targe
 pip install -e ".[dev]"
 ```
 
-The package metadata targets current upstream JAX:
-
-```toml
-jax >= 0.10.0
-jaxlib >= 0.10.0
-```
-
-Apple Metal users should use the `jax`, `jaxlib`, and `jax-metal` combination supported by Apple.
+Requires Python >= 3.11, JAX >= 0.10.0, and jaxlib >= 0.10.0.
 
 ## Benchmarks
 
@@ -71,7 +78,7 @@ JAX_PLATFORMS=cpu python benchmarks/run_benchmarks.py --devices cpu --out result
 
 The benchmark reports median latency over repeated calls and includes:
 
-- rCoLU variants: `naive`, `naive_jit`, `static_e`, `two_pass`, `single`, `custom_vjp`
+- rCoLU variants: `naive`, `naive_jit`, `static_e`, `two_pass`, `single`, `custom_vjp`, `mgpu`
 - CoLU: raw JAX and `jax_colu`
 - `jax.nn.relu`, `jax.nn.silu`, `jax.nn.gelu`
 
@@ -84,149 +91,31 @@ CPU medians from local runs:
 | `(4096, 128)` | 16 | 0.8512 | 0.1646 | 0.1587 | 0.1482 | 0.1627 | 0.1485 | 0.0815 | 0.1749 | 0.1809 |
 | `(8192, 256)` | 16 | 2.8630 | 0.5633 | 0.5845 | 0.4813 | 0.5308 | 0.4845 | 0.3150 | 0.6145 | 0.6288 |
 
-Times are milliseconds. On this machine, `two_pass` and public `custom_vjp` are the fastest rCoLU paths for the larger shapes. The custom VJP is mainly expected to help backward/training workloads.
+Times are milliseconds. On this machine, `two_pass` and public `custom_vjp` are the fastest rCoLU paths for the larger shapes.
 
-GPU validation on 2026-04-29:
+Blackwell GPU validation on 2026-05-06:
 
-- Hardware: NVIDIA RTX PRO 6000 Blackwell Server Edition, driver 580.82.07, CUDA 13.0.
-- Software: Python 3.12.13, JAX 0.7.2, jaxlib 0.7.2.
-- Test command: `python -m pytest -m gpu` (`54 passed`).
+- Hardware: NVIDIA RTX PRO 6000 Blackwell Workstation Edition, driver 590.48.01, CUDA 13 wheel stack.
+- Software: Python 3.12.3, JAX 0.10.0, jaxlib 0.10.0.
+- Default GPU test command: `python -m pytest -m gpu -q`.
+- Mosaic GPU test command: `JAX_COLU_GPU_BACKEND=mgpu python -m pytest -m gpu -q`.
+- Result for both commands: `93 passed, 69 deselected, 16 xfailed`.
 
-Blackwell GPU medians below are for `batch=4096`, `channels=256`; times are milliseconds. The public `rcolu` path uses the multi-group Pallas kernel on this backend, while public `colu` remains the JAX reference path.
+Blackwell GPU medians below are for `batch=4096`, `channels=256`.
 
 ```bash
 python benchmarks/run_benchmarks.py --devices gpu --out results/gpu_blackwell --batch 4096 --channels 256 --dims 4 8 16 32 --warmup 10 --repeat 200
+JAX_COLU_GPU_BACKEND=mgpu python benchmarks/run_benchmarks.py --devices gpu --out results/gpu_mgpu_blackwell --batch 4096 --channels 256 --dims 4 8 16 32 --warmup 10 --repeat 200
 ```
 
-<table>
-  <thead>
-    <tr>
-      <th rowspan="2">shape</th>
-      <th rowspan="2">S</th>
-      <th colspan="6">rCoLU</th>
-      <th colspan="2">CoLU</th>
-      <th colspan="3">jax.nn</th>
-    </tr>
-    <tr>
-      <th>naive</th>
-      <th>naive_jit</th>
-      <th>static_e</th>
-      <th>two_pass</th>
-      <th>single</th>
-      <th>jax_colu</th>
-      <th>raw_jax</th>
-      <th>jax_colu</th>
-      <th>relu</th>
-      <th>silu</th>
-      <th>gelu</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><code>(4096, 256)</code></td>
-      <td align="right">4</td>
-      <td align="right">0.5137</td>
-      <td align="right">0.0327</td>
-      <td align="right">0.0275</td>
-      <td align="right">0.0630</td>
-      <td align="right">0.0237</td>
-      <td align="right">0.0274</td>
-      <td align="right">0.0268</td>
-      <td align="right">0.0272</td>
-      <td align="right">0.0191</td>
-      <td align="right">0.0283</td>
-      <td align="right">0.0162</td>
-    </tr>
-    <tr>
-      <td><code>(4096, 256)</code></td>
-      <td align="right">8</td>
-      <td align="right">0.4947</td>
-      <td align="right">0.0291</td>
-      <td align="right">0.0279</td>
-      <td align="right">0.0609</td>
-      <td align="right">0.0255</td>
-      <td align="right">0.0233</td>
-      <td align="right">0.0257</td>
-      <td align="right">0.0260</td>
-      <td align="right">0.0191</td>
-      <td align="right">0.0283</td>
-      <td align="right">0.0162</td>
-    </tr>
-    <tr>
-      <td><code>(4096, 256)</code></td>
-      <td align="right">16</td>
-      <td align="right">0.3655</td>
-      <td align="right">0.0275</td>
-      <td align="right">0.0514</td>
-      <td align="right">0.0284</td>
-      <td align="right">0.0255</td>
-      <td align="right">0.0235</td>
-      <td align="right">0.0250</td>
-      <td align="right">0.0257</td>
-      <td align="right">0.0191</td>
-      <td align="right">0.0283</td>
-      <td align="right">0.0162</td>
-    </tr>
-    <tr>
-      <td><code>(4096, 256)</code></td>
-      <td align="right">32</td>
-      <td align="right">0.4038</td>
-      <td align="right">0.0282</td>
-      <td align="right">0.0282</td>
-      <td align="right">0.0257</td>
-      <td align="right">0.0257</td>
-      <td align="right">0.0277</td>
-      <td align="right">0.0297</td>
-      <td align="right">0.0298</td>
-      <td align="right">0.0191</td>
-      <td align="right">0.0283</td>
-      <td align="right">0.0162</td>
-    </tr>
-  </tbody>
-</table>
+| S | naive_jit | two_pass | single | jax_colu default | mgpu direct | relu | silu | gelu |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 4 | 0.0327 | 0.0630 | 0.0237 | 0.0274 | 0.6990 | 0.0191 | 0.0283 | 0.0162 |
+| 8 | 0.0291 | 0.0609 | 0.0255 | 0.0233 | 0.3754 | 0.0191 | 0.0283 | 0.0162 |
+| 16 | 0.0275 | 0.0284 | 0.0255 | 0.0235 | 0.1771 | 0.0191 | 0.0283 | 0.0162 |
+| 32 | 0.0282 | 0.0257 | 0.0257 | 0.0277 | 0.1102 | 0.0191 | 0.0283 | 0.0162 |
 
-The fused GPU path is now in the same latency range as the best raw-JAX rCoLU variants for this shape.
-
-GPU optimization follow-up should focus on large channel widths with small `S`
-(`S=4` and `S=8`). The next useful steps are to sweep larger `JAX_COLU_BLOCK`
-values for those dims, benchmark wider shapes such as `(1024, 4096)` and
-`(1024, 8192)`, and consider dim-specialized unrolled Pallas kernels if block
-tuning does not beat the best raw-JAX baseline. Forward+backward benchmarks
-should be tracked separately, since saving compact per-group residuals may be
-worth comparing against the current recompute-in-backward path.
-
-TPU v0.2.0 medians (batch=4096, channels=256, repeat=50) — also from before the new TPU Pallas kernel landed:
-
-| op | implementation | dim=4 | dim=8 | dim=16 | dim=32 |
-|---|---|---:|---:|---:|---:|
-| rcolu | custom_vjp (reference fallback) | 0.1715 | 0.1483 | 0.1520 | 0.1340 |
-| rcolu | two_pass | 0.1704 | 0.1507 | 0.1302 | 0.1346 |
-| rcolu | static_e | 0.2175 | 0.1508 | 0.1274 | 0.1502 |
-| colu | jax_colu (reference) | 0.1802 | 0.1514 | 0.1353 | 0.1335 |
-| jax.nn | relu / silu / gelu | 0.1257 | 0.1288 | 0.1265 | — |
-
-Times are milliseconds. The v0.3.0 TPU rCoLU Pallas kernel uses sublane-aligned blocking (BM multiple of 8); refresh this table on a real TPU host once the kernel is benchmarked.
-
-## Cap rotation experiment
-
-```bash
-python benchmarks/train_cap_rotation.py --out results/cap_rotation
-python benchmarks/train_cap_rotation.py --activations relu colu rcolu
-```
-
-This trains a one-hidden-layer network to map a 3D spherical cap to a fixed rotated copy of the cap. It writes:
-
-- `cap_rotation_curves.csv`
-- `cap_rotation_curves.pdf`
-- `cap_rotation_final.pdf`
-
-Local CPU result after 400 steps:
-
-| activation | eval MSE |
-|---|---:|
-| ReLU | `1.48e-3` |
-| CoLU | `7.26e-4` |
-| rCoLU | `8.59e-4` |
+Times are milliseconds. The default multi-group GPU path is now close to the best raw-JAX rCoLU variants for this shape. Mosaic GPU does not show a standalone activation boost; it is intended for fused Hopper/Blackwell follow-up kernels.
 
 ## Development
 
@@ -236,7 +125,7 @@ pytest -m gpu
 pytest -m tpu
 ```
 
-GPU and TPU tests are marked and skipped automatically when the hardware backend is unavailable. The GPU suite should be run on at least one supported Ampere-or-newer NVIDIA device, and the TPU suite on a real TPU host, before publishing. Public `colu()` always falls back to the reference implementation; the experimental CoLU Pallas modules and their xfails were removed.
+GPU and TPU tests are marked and skipped automatically when the hardware backend is unavailable. Public `colu()` always falls back to the reference implementation; experimental CoLU Pallas modules are not part of public dispatch.
 
 Before publishing to PyPI, run the GPU and TPU suites on real hardware and only
 then push a `v*.*.*` tag. The `publish.yml` workflow is tag-only, so normal

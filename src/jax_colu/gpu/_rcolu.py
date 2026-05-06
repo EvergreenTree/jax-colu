@@ -8,6 +8,7 @@ import os
 import jax
 import jax.numpy as jnp
 from jax.experimental import pallas as pl
+from jax.experimental.pallas import triton as pltriton
 
 from jax_colu._kernel_math import rcolu_bwd_kernel, rcolu_fwd_kernel
 
@@ -58,6 +59,7 @@ def _fwd(x: jax.Array, dim: int, eps: float):
         in_specs=[group],
         out_specs=group,
         grid=(NG // BM,),
+        compiler_params=pltriton.CompilerParams(),
     )(x_flat)
     return o.reshape(x.shape), (x_flat,)
 
@@ -76,6 +78,7 @@ def _bwd(dim: int, eps: float, residuals, g: jax.Array):
         in_specs=[group, group],
         out_specs=group,
         grid=(NG // BM,),
+        compiler_params=pltriton.CompilerParams(),
     )(x_flat, g_flat)
     return (gx.reshape(g.shape),)
 

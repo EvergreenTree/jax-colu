@@ -109,6 +109,13 @@ def rcolu_two_pass_reduce(x: jax.Array, dim: int, eps: float = 1e-7) -> jax.Arra
     return (t_pos * inv_s + sc * w).reshape(x.shape)
 
 
+def rcolu_mgpu_direct(x: jax.Array, dim: int, eps: float = 1e-7) -> jax.Array:
+    """Direct Pallas:Mosaic GPU rCoLU backend."""
+    from jax_colu.gpu._rcolu_mgpu import rcolu_mgpu
+
+    return rcolu_mgpu(x, dim=dim, eps=eps)
+
+
 def raw_jax_colu(x: jax.Array, dim: int, eps: float = 1e-7) -> jax.Array:
     """Naive raw JAX explicit-axis CoLU baseline."""
     G = x.shape[-1] // dim
@@ -238,6 +245,7 @@ def benchmark_device(
                 ("rcolu", "two_pass", dim, lambda x, dim=dim: rcolu_two_pass_reduce(x, dim), True),
                 ("rcolu", "single", dim, lambda x, dim=dim: rcolu_single_kernel(x, dim), True),
                 ("rcolu", "custom_vjp", dim, lambda x, dim=dim: rcolu(x, dim=dim), False),
+                ("rcolu", "mgpu", dim, lambda x, dim=dim: rcolu_mgpu_direct(x, dim), True),
                 ("colu", "raw_jax", dim, lambda x, dim=dim: raw_jax_colu(x, dim), True),
                 ("colu", "jax_colu", dim, lambda x, dim=dim: colu(x, dim=dim), False),
             ]

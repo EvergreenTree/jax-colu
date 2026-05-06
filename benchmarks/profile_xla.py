@@ -31,6 +31,10 @@ def _get_fn(variant: str):
         from jax_colu.gpu._rcolu import rcolu_gpu
 
         return lambda z: rcolu_gpu(z, dim=DIM)
+    if variant == "rcolu-mgpu":
+        from jax_colu.gpu._rcolu_mgpu import rcolu_mgpu
+
+        return lambda z: rcolu_mgpu(z, dim=DIM)
     if variant == "colu-pallas":
         from jax_colu.gpu._colu import colu_gpu
 
@@ -85,7 +89,13 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--variant",
-        choices=["rcolu-ref", "rcolu-pallas", "colu-ref", "colu-pallas"],
+        choices=[
+            "rcolu-ref",
+            "rcolu-pallas",
+            "rcolu-mgpu",
+            "colu-ref",
+            "colu-pallas",
+        ],
         default="rcolu-ref",
     )
     parser.add_argument("--out", default="/tmp/jax_colu_hlo")

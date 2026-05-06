@@ -30,9 +30,22 @@ def has_supported_gpu_pallas_backend() -> bool:
     return _gpu_backend_supports_pallas()
 
 
+def has_supported_gpu_mgpu_backend() -> bool:
+    if not has_gpu_backend():
+        return False
+    from jax_colu._dispatch import _gpu_backend_supports_mgpu
+
+    return _gpu_backend_supports_mgpu()
+
+
 def require_supported_gpu_pallas_backend() -> None:
     if not has_supported_gpu_pallas_backend():
         pytest.skip("requires Ampere-or-newer NVIDIA GPU Pallas backend")
+
+
+def require_supported_gpu_mgpu_backend() -> None:
+    if not has_supported_gpu_mgpu_backend():
+        pytest.skip("requires Hopper-or-newer NVIDIA GPU Mosaic backend")
 
 
 def has_tpu_backend() -> bool:

@@ -12,19 +12,46 @@ from jax_colu._reference import colu_reference, rcolu_reference
 
 _GPU_BACKENDS = frozenset({"gpu", "cuda", "rocm"})
 _TPU_BACKENDS = frozenset({"tpu"})
+_GPU_PALLAS_BACKENDS = frozenset({"triton", "mgpu"})
+_DEFAULT_GPU_PALLAS_BACKEND = "triton"
 
 _TRUTHY = frozenset({"1", "true", "yes", "on"})
 
 # Public dispatch only routes to the GPU Pallas kernel on Ampere-or-newer
 # NVIDIA devices; older NVIDIA generations and non-NVIDIA GPUs fall back to
-# the JAX reference path. Users can override either way with
+# the JAX reference path. Users can override the Triton path with
 # JAX_COLU_FORCE_PALLAS / JAX_COLU_DISABLE_PALLAS.
 _AMPERE_PLUS_TOKENS = (
-    "a100", "a800", "a10", "a16", "a2", "a30", "a40",
-    "l4", "l40",
-    "rtx 30", "rtx 40", "rtx 50", "rtx a", "ada",
-    "h100", "h200", "hopper",
-    "b100", "b200", "gb200", "blackwell",
+    "a100",
+    "a800",
+    "a10",
+    "a16",
+    "a2",
+    "a30",
+    "a40",
+    "l4",
+    "l40",
+    "rtx 30",
+    "rtx 40",
+    "rtx 50",
+    "rtx a",
+    "ada",
+    "h100",
+    "h200",
+    "hopper",
+    "b100",
+    "b200",
+    "gb200",
+    "blackwell",
+)
+_HOPPER_PLUS_TOKENS = (
+    "h100",
+    "h200",
+    "hopper",
+    "b100",
+    "b200",
+    "gb200",
+    "blackwell",
 )
 
 
@@ -49,12 +76,29 @@ def _is_ampere_plus(device_kind: str) -> bool:
     return any(token in haystack for token in _AMPERE_PLUS_TOKENS)
 
 
+def _is_hopper_or_newer_nvidia(device_kind: str) -> bool:
+    haystack = _normalise_device_kind(device_kind)
+    return any(token in haystack for token in _HOPPER_PLUS_TOKENS)
+
+
 def _gpu_device_kinds() -> tuple[str, ...]:
     try:
         devices = jax.devices("gpu")
     except Exception:
         devices = [d for d in jax.devices() if d.platform in _GPU_BACKENDS]
     return tuple(getattr(d, "device_kind", str(d)) for d in devices)
+
+
+def _gpu_pallas_backend() -> str:
+    value = os.environ.get("JAX_COLU_GPU_BACKEND", "").strip().lower()
+    if not value:
+        return _DEFAULT_GPU_PALLAS_BACKEND
+    if value not in _GPU_PALLAS_BACKENDS:
+        allowed = ", ".join(sorted(_GPU_PALLAS_BACKENDS))
+        raise ValueError(
+            f"invalid JAX_COLU_GPU_BACKEND={value!r}; expected one of: {allowed}"
+        )
+    return value
 
 
 def _gpu_backend_supports_pallas() -> bool:
@@ -64,6 +108,13 @@ def _gpu_backend_supports_pallas() -> bool:
         return True
     kinds = _gpu_device_kinds()
     return bool(kinds) and all(_is_ampere_plus(k) for k in kinds)
+
+
+def _gpu_backend_supports_mgpu() -> bool:
+    if _env_truthy("JAX_COLU_DISABLE_PALLAS"):
+        return False
+    kinds = _gpu_device_kinds()
+    return bool(kinds) and all(_is_hopper_or_newer_nvidia(k) for k in kinds)
 
 
 def _has_tpu_devices() -> bool:
@@ -81,6 +132,36 @@ def _tpu_backend_supports_pallas() -> bool:
     return _has_tpu_devices()
 
 
+def _rcolu_args_supported(
+    *, dim: object, num_groups: object, scaling: str, axis: int
+) -> bool:
+    return (
+        scaling == "hard"
+        and axis == -1
+        and num_groups is None
+        and _is_scalar_dim(dim)
+    )
+
+
+def _rcolu_gpu_backend(
+    *,
+    backend: str,
+    dim: object,
+    num_groups: object,
+    scaling: str,
+    axis: int,
+) -> str | None:
+    if backend not in _GPU_BACKENDS or not _rcolu_args_supported(
+        dim=dim, num_groups=num_groups, scaling=scaling, axis=axis
+    ):
+        return None
+
+    selected = _gpu_pallas_backend()
+    if selected == "mgpu":
+        return "mgpu" if _gpu_backend_supports_mgpu() else None
+    return "triton" if _gpu_backend_supports_pallas() else None
+
+
 def _can_use_pallas_rcolu(
     *,
     backend: str,
@@ -89,15 +170,21 @@ def _can_use_pallas_rcolu(
     scaling: str,
     axis: int,
 ) -> bool:
-    if not (
-        scaling == "hard"
-        and axis == -1
-        and num_groups is None
-        and _is_scalar_dim(dim)
+    if not _rcolu_args_supported(
+        dim=dim, num_groups=num_groups, scaling=scaling, axis=axis
     ):
         return False
     if backend in _GPU_BACKENDS:
-        return _gpu_backend_supports_pallas()
+        return (
+            _rcolu_gpu_backend(
+                backend=backend,
+                dim=dim,
+                num_groups=num_groups,
+                scaling=scaling,
+                axis=axis,
+            )
+            is not None
+        )
     if backend in _TPU_BACKENDS:
         return _tpu_backend_supports_pallas()
     return False
@@ -117,21 +204,33 @@ def rcolu(
 ):
     """Homogeneous-axis Conic Linear Unit."""
     backend = _backend()
+    if backend in _GPU_BACKENDS:
+        rcolu_backend = _rcolu_gpu_backend(
+            backend=backend,
+            dim=dim,
+            num_groups=num_groups,
+            scaling=scaling,
+            axis=axis,
+        )
+        if rcolu_backend == "mgpu":
+            from jax_colu.gpu._rcolu_mgpu import rcolu_mgpu
+
+            return rcolu_mgpu(x, dim=dim, eps=eps)
+        if rcolu_backend == "triton":
+            from jax_colu.gpu._rcolu import rcolu_gpu
+
+            return rcolu_gpu(x, dim=dim, eps=eps)
+
     if _can_use_pallas_rcolu(
         backend=backend,
         dim=dim,
         num_groups=num_groups,
         scaling=scaling,
         axis=axis,
-    ):
-        if backend in _GPU_BACKENDS:
-            from jax_colu.gpu._rcolu import rcolu_gpu
+    ) and backend in _TPU_BACKENDS:
+        from jax_colu.tpu._rcolu import rcolu_tpu
 
-            return rcolu_gpu(x, dim=dim, eps=eps)
-        if backend in _TPU_BACKENDS:
-            from jax_colu.tpu._rcolu import rcolu_tpu
-
-            return rcolu_tpu(x, dim=dim, eps=eps)
+        return rcolu_tpu(x, dim=dim, eps=eps)
 
     return rcolu_reference(
         x, dim=dim, num_groups=num_groups, scaling=scaling, axis=axis, eps=eps
